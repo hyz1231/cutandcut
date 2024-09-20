@@ -1,0 +1,52 @@
+#include <QApplication>
+#include <OccViewerQt/OccViewer/OccViewer.h>
+#include <STEPControl_Reader.hxx>
+#include <TopoDS_Shape.hxx>
+#include <AIS_ColoredShape.hxx>
+#include <Quantity_Color.hxx>
+#include <OccEasyDrawing/EasyDrawing.hpp>
+#include <iostream>
+
+// main函数：程序的入口
+int main(int argc, char* argv[])
+{
+    // 创建一个QApplication对象，管理应用程序的控制流和主要设置
+    QApplication a(argc, argv);
+
+    // 实例化一个OccViewer对象，用于显示3D视图
+    OccViewerQt::OccViewer viewer{};
+    viewer.show(); // 显示视图
+
+    // 创建一个STEPControl_Reader对象，用于读取STEP文件
+    STEPControl_Reader reader;
+    // 读取STEP文件，如果失败则输出错误信息并返回1
+    IFSelect_ReturnStatus status = reader.ReadFile("C:/Users/Administrator/Desktop/Cabin A.1.stp");
+    if (status != IFSelect_RetDone) {
+        std::cerr << "Error reading STEP file." << std::endl;
+        return 1;
+    }
+
+    // 将STEP文件转换为TopoDS_Shape对象
+    reader.TransferRoot();
+    TopoDS_Shape shape = reader.OneShape();
+
+    // 创建一个AIS_ColoredShape对象，用于在视图中显示形状，并设置颜色为蓝色
+    Handle(AIS_ColoredShape) aisShape = new AIS_ColoredShape(shape);
+    aisShape->SetColor(Quantity_Color(Quantity_NOC_BLUE));
+
+    // 创建一个对象向量，并将形状对象添加到其中
+    std::vector<Handle(AIS_InteractiveObject)> objs;
+    objs.push_back(aisShape);
+
+    // 创建ViewerHandles对象，用于管理视图和上下文
+    OccEasyDrawing::ViewerHandles handles{ viewer.GetV3dView(), viewer.GetAISContext() };
+    // 使用OccEasyDrawing将对象显示在视图中
+    OccEasyDrawing::DisplayObject(handles, objs);
+
+    // 设置视图为阴影模式并适应所有对象
+    viewer.GetViewWidget()->Shading();
+    viewer.GetViewWidget()->FitAll();
+
+    // 启动应用程序事件循环
+    return QApplication::exec();
+}

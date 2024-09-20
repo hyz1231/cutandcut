@@ -1,0 +1,186 @@
+#include <QApplication>
+#include <OccViewerQt/OccViewer/OccViewer.h>
+#include <STEPControl_Reader.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Shape.hxx>
+#include <AIS_ColoredShape.hxx>
+#include <Quantity_Color.hxx>
+#include <OccEasyDrawing/EasyDrawing.hpp>
+#include <iostream>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <AIS_Shape.hxx>
+#include <gp_Pnt.hxx>
+#include <Quantity_Color.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
+#include <AIS_Shape.hxx>
+#include <fstream>
+#include <sstream>
+#include <vector>
+
+// 从文件读取点集数据，并按空行分组
+std::vector<std::vector<gp_Pnt>> readPointsFromFile(const std::string& filePath) {
+    std::ifstream file(filePath);
+    std::vector<std::vector<gp_Pnt>> groups;
+    std::vector<gp_Pnt> currentGroup;
+    std::string line;
+
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file " << filePath << std::endl;
+        return groups;
+    }
+
+    // 读取文件内容并解析点，并按空行分组
+    while (std::getline(file, line)) {
+        if (line.empty()) {
+            if (!currentGroup.empty()) {
+                groups.push_back(currentGroup);
+                currentGroup.clear();
+            }
+        }
+        else {
+            std::istringstream iss(line);
+            double x, y, z;
+            if (iss >> x >> y >> z) {
+                currentGroup.emplace_back(gp_Pnt(x, y, z));
+            }
+        }
+    }
+
+    if (!currentGroup.empty()) {
+        groups.push_back(currentGroup);
+    }
+
+    file.close();
+    return groups;
+}
+
+// 从点集生成模型并返回 TopoDS_Shape
+TopoDS_Shape generateModelFromPoints(const std::vector<gp_Pnt>& points1, const std::vector<gp_Pnt>& points2) {
+    if (points1.size() < 3 || points2.size() < 3) {
+        std::cerr << "Error: Insufficient points in one of the point sets." << std::endl;
+        return TopoDS_Shape();
+    }
+
+    // 创建多边形
+    BRepBuilderAPI_MakePolygon edge1;
+    for (const auto& point : points1) {
+        edge1.Add(point);
+    }
+    edge1.Close();
+
+    BRepBuilderAPI_MakePolygon edge2;
+    for (const auto& point : points2) {
+        edge2.Add(point);
+    }
+    edge2.Close();
+
+    // 使用 BRepOffsetAPI_ThruSections 生成直纹面
+    BRepOffsetAPI_ThruSections generator(Standard_True, Standard_False);
+    generator.AddWire(edge1.Wire());
+    generator.AddWire(edge2.Wire());
+    generator.CheckCompatibility(Standard_False);  // 不检查兼容性
+    generator.Build(); // 构建形状
+    TopoDS_Shape ruledSurface = generator.Shape(); // 生成直纹面
+
+    // 使用 BRepBuilderAPI_Sewing 进行缝合操作
+    BRepBuilderAPI_Sewing sewing;
+    sewing.Add(ruledSurface);
+    sewing.Perform();
+
+    // 获取缝合后的形状
+    TopoDS_Shape sewedShape = sewing.SewedShape();
+
+    // 验证 sewedShape 是否为 Shell，并转换为 Solid
+    TopExp_Explorer explorer(sewedShape, TopAbs_SHELL);
+    if (explorer.More()) {
+        TopoDS_Shell shellShape = TopoDS::Shell(explorer.Current());
+        TopoDS_Solid solidShape = BRepBuilderAPI_MakeSolid(shellShape);
+        return solidShape; // 返回生成的 Solid 形状
+    }
+    else {
+        std::cout << "Error: sewedShape is not a valid shell." << std::endl;
+        return TopoDS_Shape();
+    }
+}
+
+// 计算体积
+Standard_Real calculateVolume(const TopoDS_Shape& shape) {
+    GProp_GProps systemProps;
+    BRepGProp::VolumeProperties(shape, systemProps);
+    Standard_Real volume_mm3 = systemProps.Mass();  // 计算得到的体积（立方毫米）
+    Standard_Real volume_m3 = volume_mm3 / 1e9;     // 转换为立方米
+    return volume_m3;
+}
+
+int main(int argc, char* argv[]) {
+    QApplication a(argc, argv);
+
+    OccViewerQt::OccViewer viewer{};
+    viewer.show();
+
+    // 读取 STP 文件并转换成 TopoDS_Shape
+    STEPControl_Reader reader;
+    IFSelect_ReturnStatus status = reader.ReadFile("C:/Users/Administrator/Desktop/HULL A.1.stp");
+    if (status != IFSelect_RetDone) {
+        std::cerr << "Error reading STEP file." << std::endl;
+        return 1;
+    }
+    reader.TransferRoot();
+    TopoDS_Shape shape = reader.OneShape();
+
+    // 从 txt 文件读取点集数据
+    std::vector<std::vector<gp_Pnt>> groups = readPointsFromFile("C:/Users/Administrator/Desktop/hhh.txt");
+    if (groups.size() < 2) {
+        std::cerr << "Error: Not enough point groups in the file." << std::endl;
+        return -1;
+    }
+
+    // 获取交互上下文
+    Handle(AIS_InteractiveContext) context = viewer.GetAISContext();
+
+    // 生成 txt 模型
+    const auto& points1 = groups[0];
+    const auto& points2 = groups[1];
+    TopoDS_Shape txtModelShape = generateModelFromPoints(points1, points2);
+    if (txtModelShape.IsNull()) {
+        std::cerr << "Error: Failed to generate model from txt file." << std::endl;
+        return -1;
+    }
+
+    // 创建用于切割的两个平面
+    TopoDS_Shape box1 = BRepPrimAPI_MakeBox(gp_Pnt(-1e9, -1e6, -1e6), gp_Pnt(161150, 1e6, 1e6)).Shape();
+    TopoDS_Shape box2 = BRepPrimAPI_MakeBox(gp_Pnt(176350, -1e6, -1e6), gp_Pnt(1e9, 1e6, 1e6)).Shape();
+
+    // 使用 box1 和 box2 对 STP 模型进行两次切割
+    TopoDS_Shape shapeAfterFirstCut = BRepAlgoAPI_Cut(shape, box1);
+    TopoDS_Shape finalShape = BRepAlgoAPI_Cut(shapeAfterFirstCut, box2);
+
+    // 对切割后的 STP 模型与 txt 模型进行布尔减运算
+    TopoDS_Shape resultShape = BRepAlgoAPI_Cut(finalShape, txtModelShape);
+
+    // 显示布尔减运算的结果
+    Handle(AIS_Shape) aisFinalShape = new AIS_Shape(resultShape);
+    context->Display(aisFinalShape, Standard_True);
+
+    // 可选：计算最终模型的体积
+    Standard_Real finalVolume = calculateVolume(resultShape);
+    std::cout << "The volume of the final model is: " << finalVolume << " cubic meters." << std::endl;
+
+    // 调整视图
+    viewer.GetViewWidget()->Shading();
+    viewer.GetViewWidget()->FitAll();
+
+    return QApplication::exec();
+}

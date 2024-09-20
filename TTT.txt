@@ -1,0 +1,113 @@
+#include <QApplication>
+#include <OccViewerQt/OccViewer/OccViewer.h>
+#include <STEPControl_Reader.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Shape.hxx>
+#include <AIS_ColoredShape.hxx>
+#include <Quantity_Color.hxx>
+#include <OccEasyDrawing/EasyDrawing.hpp>
+#include <iostream>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <AIS_Shape.hxx>
+#include <gp_Pnt.hxx>
+#include <Quantity_Color.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <gp_Pln.hxx>
+#include <Geom_Plane.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
+
+int main(int argc, char* argv[])
+{
+    QApplication a(argc, argv);
+
+    OccViewerQt::OccViewer viewer{};
+    viewer.show();
+
+    // 读取STP文件
+    STEPControl_Reader reader;
+    IFSelect_ReturnStatus status = reader.ReadFile("C:/Users/Administrator/Desktop/BAA.stp");
+    if (status != IFSelect_RetDone) {
+        std::cerr << "Error reading STEP file." << std::endl;
+        return 1;
+    }
+    // 转换STEP文件到TopoDS_Shape
+    reader.TransferRoot();
+    TopoDS_Shape shape = reader.OneShape();
+
+    // 获取模型的边界框，以确认模型的尺寸范围
+    Bnd_Box boundingBox;
+    BRepBndLib::Add(shape, boundingBox);
+    Standard_Real xmin, ymin, zmin, xmax, ymax, zmax;
+    boundingBox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    std::cout << "Bounding box: Xmin=" << xmin << ", Xmax=" << xmax << std::endl;
+
+    // 如果模型不在合理范围内，你可能需要调整平面的位置
+    if (xmin > 125350 || xmax < 152550) {
+        std::cerr << "Model's X range does not match the cutting range." << std::endl;
+    }
+
+    // 创建AIS_ColoredShape以在视图中显示
+    Handle(AIS_ColoredShape) aisShape = new AIS_ColoredShape(shape);
+    aisShape->SetColor(Quantity_Color(Quantity_NOC_BLUE));
+
+    // 创建平面 X=125350 进行第一次切割
+    gp_Pln plane1(gp_Pnt(125350, 0, 0), gp_Dir(1, 0, 0));  // 平行于YOZ平面
+    TopoDS_Face face1 = BRepBuilderAPI_MakeFace(plane1).Face();
+    TopoDS_Shape shapeAfterFirstCut = BRepAlgoAPI_Cut(shape, face1);
+
+    if (shapeAfterFirstCut.IsNull()) {
+        std::cerr << "First cut result is null." << std::endl;
+        return 1;
+    }
+
+    // 创建平面 X=152550 进行第二次切割
+    gp_Pln plane2(gp_Pnt(152550, 0, 0), gp_Dir(-1, 0, 0));  // 平行于YOZ平面，反向
+    TopoDS_Face face2 = BRepBuilderAPI_MakeFace(plane2).Face();
+    TopoDS_Shape finalShape = BRepAlgoAPI_Cut(shapeAfterFirstCut, face2);
+
+    if (finalShape.IsNull()) {
+        std::cerr << "Second cut result is null." << std::endl;
+        return 1;
+    }
+
+    // 创建一个AIS_Shape对象用于显示最终切割后的模型
+    Handle(AIS_Shape) aisFinalShape = new AIS_Shape(finalShape);
+    aisFinalShape->SetColor(Quantity_Color(Quantity_NOC_BLUE1));
+
+    // 显示XYZ坐标轴
+    // X轴 (红色)
+    gp_Pnt origin(0, 0, 0);
+    gp_Pnt xAxisEnd(30000, 0, 0);
+    TopoDS_Shape xAxis = BRepBuilderAPI_MakeEdge(origin, xAxisEnd).Shape();
+    Handle(AIS_Shape) aisXAxis = new AIS_Shape(xAxis);
+    aisXAxis->SetColor(Quantity_Color(Quantity_NOC_RED));
+
+    // Y轴 (绿色)
+    gp_Pnt yAxisEnd(0, 30000, 0);
+    TopoDS_Shape yAxis = BRepBuilderAPI_MakeEdge(origin, yAxisEnd).Shape();
+    Handle(AIS_Shape) aisYAxis = new AIS_Shape(yAxis);
+    aisYAxis->SetColor(Quantity_Color(Quantity_NOC_GREEN));
+
+    // Z轴 (蓝色)
+    gp_Pnt zAxisEnd(0, 0, 30000);
+    TopoDS_Shape zAxis = BRepBuilderAPI_MakeEdge(origin, zAxisEnd).Shape();
+    Handle(AIS_Shape) aisZAxis = new AIS_Shape(zAxis);
+    aisZAxis->SetColor(Quantity_Color(Quantity_NOC_BLUE1));
+
+    // 使用OccEasyDrawing显示对象
+    std::vector<Handle(AIS_InteractiveObject)> objs;
+    objs.push_back(aisFinalShape);  // 只添加最终切割后的模型
+    objs.push_back(aisXAxis);
+    objs.push_back(aisYAxis);
+    objs.push_back(aisZAxis);
+    OccEasyDrawing::ViewerHandles handles{ viewer.GetV3dView(), viewer.GetAISContext() };
+    OccEasyDrawing::DisplayObject(handles, objs);
+
+    // 调整视图
+    viewer.GetViewWidget()->Shading();
+    viewer.GetViewWidget()->FitAll();
+
+    return QApplication::exec();
+}
